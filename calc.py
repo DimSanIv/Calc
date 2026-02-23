@@ -74,7 +74,7 @@ class OS2Calculator:
         self.log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'calc.log')
         self._create_widgets()
         self._create_history_window()
-        self._load_log()
+        self._clear_history()
         self._bind_keyboard()
         
     def _create_widgets(self):
@@ -567,6 +567,7 @@ class OS2Calculator:
             state=tk.NORMAL
         )
         self.history_text.tag_configure('modified', foreground='red')
+        self.history_text.bind('<KeyPress>', self._on_tape_key_press)
         self.history_text.bind('<KeyRelease>', self._on_tape_key_release)
         self.history_text.bind('<Return>', self._on_tape_enter)
         self.history_text.bind('<KP_Enter>', self._on_tape_enter)
@@ -639,6 +640,16 @@ class OS2Calculator:
             self._tape_baseline = self.history.copy()
         except OSError:
             pass
+
+    def _on_tape_key_press(self, event):
+        """На ленте разрешены только цифры и знаки чисел (0-9, запятая, минус, точка)."""
+        allowed_keys = ('BackSpace', 'Delete', 'Left', 'Right', 'Up', 'Down', 'Home', 'End', 'Tab')
+        allowed_chars = set("0123456789,\'-.")
+        if event.keysym in allowed_keys:
+            return
+        if event.char and event.char in allowed_chars:
+            return
+        return 'break'
 
     def _on_tape_key_release(self, event=None):
         """Подсветка изменённых строк ленты красным."""
