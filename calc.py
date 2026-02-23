@@ -40,7 +40,7 @@ class OS2Calculator:
         """
         self.root = root
         self.root.title("Калькулятор OS/2")
-        self.root.geometry("320x450")
+        self.root.geometry("340x440")
         self.root.resizable(False, False)
         
         # Стиль OS/2 - серый фон
@@ -67,6 +67,8 @@ class OS2Calculator:
         self.last_operation = None
         # Базовое состояние ленты для подсветки изменённых строк (при редактировании)
         self._tape_baseline = []
+        # Флаг: последнее значение было введено через % (для отображения % в ленте)
+        self._last_value_was_percent = False
         
         # Путь к лог-файлу ленты (в папке программы)
         self.log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'calc.log')
@@ -158,10 +160,10 @@ class OS2Calculator:
         
         clear_ribbon_btn = tk.Button(
             ribbon_buttons_frame,
-            text="Очистить ленту",
+            text="Очистить ленту (Ctrl+Shift+T)",
             command=self._clear_history,
             bg='#C0C0C0',
-            font=('MS Sans Serif', 9),
+            font=('MS Sans Serif', 8),
             relief=tk.RAISED,
             bd=2
         )
@@ -232,36 +234,45 @@ class OS2Calculator:
         zero_btn = self._create_number_button(row4, "0")
         zero_btn.pack(side=tk.LEFT, padx=2, fill=tk.BOTH, expand=True)
         
-        clear_btn = self._create_button(row4, "Очистить", self._clear_all, height=2)
+        clear_btn = self._create_button(row4, "Очистить (C)", self._clear_all, height=2)
         clear_btn.pack(side=tk.LEFT, padx=2, fill=tk.BOTH, expand=True)
         
         backspace_btn = self._create_button(row4, "←", self._backspace, height=2)
         backspace_btn.pack(side=tk.LEFT, padx=2, fill=tk.BOTH, expand=True)
         
-        # Правая часть: кнопки операций
+        # Правая часть: кнопки операций (2 колонки × 3 ряда — все видны)
         operations_frame = tk.Frame(digits_and_ops, bg='#C0C0C0')
-        operations_frame.pack(side=tk.LEFT, fill=tk.Y, padx=(2, 0))
+        operations_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(2, 0))
         
-        # Кнопка сложения (+)
-        add_btn = self._create_operation_button(operations_frame, "+", self._add)
-        add_btn.pack(pady=2, fill=tk.BOTH, expand=True)
+        op_row1 = tk.Frame(operations_frame, bg='#C0C0C0')
+        op_row1.pack(fill=tk.X, pady=2)
+        add_btn = self._create_operation_button(op_row1, "+", self._add)
+        add_btn.pack(side=tk.LEFT, padx=1, fill=tk.BOTH, expand=True)
+        subtract_btn = self._create_operation_button(op_row1, "-", self._subtract)
+        subtract_btn.pack(side=tk.LEFT, padx=1, fill=tk.BOTH, expand=True)
         
-        # Кнопка вычитания (-)
-        subtract_btn = self._create_operation_button(operations_frame, "-", self._subtract)
-        subtract_btn.pack(pady=2, fill=tk.BOTH, expand=True)
+        op_row2 = tk.Frame(operations_frame, bg='#C0C0C0')
+        op_row2.pack(fill=tk.X, pady=2)
+        mult_btn = self._create_operation_button(op_row2, "*", self._multiply)
+        mult_btn.pack(side=tk.LEFT, padx=1, fill=tk.BOTH, expand=True)
+        div_btn = self._create_operation_button(op_row2, "/", self._divide)
+        div_btn.pack(side=tk.LEFT, padx=1, fill=tk.BOTH, expand=True)
         
-        # Кнопка применения операции (=)
-        equals_btn = self._create_operation_button(operations_frame, "=", self._equals)
-        equals_btn.pack(pady=2, fill=tk.BOTH, expand=True)
+        op_row3 = tk.Frame(operations_frame, bg='#C0C0C0')
+        op_row3.pack(fill=tk.X, pady=2)
+        pct_btn = self._create_operation_button(op_row3, "% (%)", self._percent)
+        pct_btn.pack(side=tk.LEFT, padx=1, fill=tk.BOTH, expand=True)
+        equals_btn = self._create_operation_button(op_row3, "=", self._equals)
+        equals_btn.pack(side=tk.LEFT, padx=1, fill=tk.BOTH, expand=True)
         
     def _create_number_button(self, parent, text):
         """Создание кнопки с цифрой."""
         return self._create_button(parent, text, lambda: self._number_click(text), height=3)
     
     def _create_operation_button(self, parent, text, command):
-        """Создание крупной кнопки операции."""
-        font_size = 24 if text != "=" else 20
-        return self._create_button(parent, text, command, height=3, font_size=font_size)
+        """Создание кнопки операции (2 колонки — компактно)."""
+        font_size = 18 if text in ("=", "*", "/", "%") or "%" in text else 22
+        return self._create_button(parent, text, command, height=2, font_size=font_size)
     
     def _create_button(self, parent, text, command, height=2, font_size=12):
         """
@@ -294,6 +305,7 @@ class OS2Calculator:
         if self.input_mode == "operation":
             self.current_input = ""
             self.input_mode = "number"
+            self._last_value_was_percent = False
         
         if digit == '.':
             # Обработка десятичной точки
@@ -319,20 +331,55 @@ class OS2Calculator:
         """Обработка операции вычитания."""
         self._apply_operation("-")
     
+    def _multiply(self):
+        """Обработка операции умножения."""
+        self._apply_operation("*")
+    
+    def _divide(self):
+        """Обработка операции деления."""
+        self._apply_operation("/")
+    
+    def _percent(self):
+        """Процент от текущей суммы: введённое число заменяется на (текущая_сумма * число / 100)."""
+        if not self.current_input:
+            return
+        try:
+            value = Decimal(self.current_input)
+            self._percent_original_value = value
+            self._last_value_was_percent = True
+            pct_value = self.current_sum * value / 100
+            self.current_input = str(pct_value)
+            self._update_input_display()
+        except (InvalidOperation, ValueError):
+            messagebox.showerror("Ошибка", "Неверный ввод для процента.")
+    
     def _apply_operation(self, operation):
         """Применение операции к текущей сумме."""
         if self.current_input:
             try:
                 value = Decimal(self.current_input)
+                previous_sum = self.current_sum
                 if self.last_operation == "+":
                     self.current_sum += value
                 elif self.last_operation == "-":
                     self.current_sum -= value
+                elif self.last_operation == "*":
+                    self.current_sum *= value
+                elif self.last_operation == "/":
+                    if value == 0:
+                        messagebox.showerror("Ошибка", "Деление на ноль.")
+                        return
+                    self.current_sum /= value
                 else:
                     self.current_sum = value
                 
                 if self.last_operation:
-                    self._add_to_history(f"{self._format_number(self.current_sum - value)} {self.last_operation} {self._format_number(value)} = {self._format_number(self.current_sum)}")
+                    if getattr(self, '_last_value_was_percent', False):
+                        right_str = self._format_number(self._percent_original_value) + "%"
+                        self._last_value_was_percent = False
+                    else:
+                        right_str = self._format_number(value)
+                    self._add_to_history(f"{self._format_number(previous_sum)} {self.last_operation} {right_str} = {self._format_number(self.current_sum)}")
                 
                 self.last_operation = operation
                 self.current_input = ""
@@ -346,6 +393,7 @@ class OS2Calculator:
         else:
             # Если нет текущего ввода, просто запоминаем операцию
             self.last_operation = operation
+            self._last_value_was_percent = False
     
     def _equals(self):
         """Применение операции и завершение вычисления."""
@@ -428,28 +476,23 @@ class OS2Calculator:
     
     def _format_number(self, number):
         """Форматирование числа для отображения: 2 цифры после запятой и разделители тысяч."""
-        # Округляем до 2 знаков после запятой
         num_decimal = Decimal(number).quantize(Decimal('0.01'))
+        is_negative = num_decimal < 0
+        num_decimal = abs(num_decimal)
         num_str = str(num_decimal)
-        
-        # Разделяем на целую и дробную части
         parts = num_str.split('.')
         integer_part = parts[0]
         decimal_part = parts[1] if len(parts) > 1 else '00'
-        
-        # Обеспечиваем 2 цифры после запятой
         if len(decimal_part) < 2:
             decimal_part = decimal_part.ljust(2, '0')
-        
-        # Добавляем символ "'" как разделитель тысяч
         formatted = ""
         for i, digit in enumerate(reversed(integer_part)):
             if i > 0 and i % 3 == 0:
                 formatted = "'" + formatted
             formatted = digit + formatted
-        
         formatted += "," + decimal_part
-        
+        if is_negative:
+            formatted = "-" + formatted
         return formatted
     
     def _bind_keyboard(self):
@@ -461,6 +504,9 @@ class OS2Calculator:
         # Операции
         self.root.bind('+', lambda e: self._add())
         self.root.bind('-', lambda e: self._subtract())
+        self.root.bind('*', lambda e: self._multiply())
+        self.root.bind('/', lambda e: self._divide())
+        self.root.bind('%', lambda e: self._percent())
         self.root.bind('=', lambda e: self._equals())
         self.root.bind('<Return>', lambda e: self._equals())
         self.root.bind('<KP_Enter>', lambda e: self._equals())  # Enter на цифровой клавиатуре
@@ -470,6 +516,8 @@ class OS2Calculator:
         self.root.bind('<Delete>', lambda e: self._clear_all())
         self.root.bind('c', lambda e: self._clear_all())
         self.root.bind('C', lambda e: self._clear_all())
+        self.root.bind('<Control-Shift-T>', lambda e: self._clear_history())
+        self.root.bind('<Control-Shift-t>', lambda e: self._clear_history())
         
         # Запятая для десятичных чисел
         self.root.bind(',', lambda e: self._number_click('.'))
@@ -520,9 +568,13 @@ class OS2Calculator:
         )
         self.history_text.tag_configure('modified', foreground='red')
         self.history_text.bind('<KeyRelease>', self._on_tape_key_release)
+        self.history_text.bind('<Return>', self._on_tape_enter)
+        self.history_text.bind('<KP_Enter>', self._on_tape_enter)
         self.history_text.pack(padx=(5, 0), pady=(0, 5), fill=tk.BOTH, expand=True)
         history_scrollbar.config(command=self.history_text.yview)
         
+        self.history_window.bind('<Control-Shift-T>', lambda e: self._clear_history())
+        self.history_window.bind('<Control-Shift-t>', lambda e: self._clear_history())
         # Обработчик закрытия окна
         self.history_window.protocol("WM_DELETE_WINDOW", self._toggle_history_window)
     
@@ -545,9 +597,15 @@ class OS2Calculator:
             pass
     
     def _clear_history(self):
-        """Очистка истории вычислений (ленты) и содержимого calc.log."""
+        """Очистка ленты, calc.log и сброс калькулятора (сумма, ввод)."""
         self.history.clear()
         self._history_clear()
+        self.current_sum = Decimal('0')
+        self.current_input = ""
+        self.last_operation = None
+        self.input_mode = "number"
+        self._update_sum_display()
+        self._update_input_display()
         try:
             with open(self.log_path, 'w', encoding='utf-8') as f:
                 pass
@@ -586,6 +644,13 @@ class OS2Calculator:
         """Подсветка изменённых строк ленты красным."""
         self._update_tape_modified_marks()
 
+    def _on_tape_enter(self, event=None):
+        """Пересчёт ленты по Enter в окне ленты; возврат фокуса в окно калькулятора."""
+        self._recalculate_tape()
+        self.root.focus_set()
+        self.root.lift()
+        return 'break'
+
     def _update_tape_modified_marks(self):
         """Помечает красным строки, отличающиеся от базового состояния."""
         self.history_text.tag_remove('modified', '1.0', tk.END)
@@ -600,10 +665,13 @@ class OS2Calculator:
                 self.history_text.tag_add('modified', start, end)
 
     def _parse_display_number(self, s):
-        """Преобразует число с ленты (формат 1'234,56) в Decimal. Возвращает None при ошибке."""
+        """Преобразует число с ленты (формат 1'234,56 или 15,00%) в Decimal. Возвращает None при ошибке."""
         if not s or not s.strip():
             return None
-        s = s.strip().replace("'", "").replace(",", ".")
+        s = s.strip()
+        if s.endswith("%"):
+            s = s[:-1].strip()
+        s = s.replace("'", "").replace(",", ".")
         try:
             return Decimal(s)
         except (InvalidOperation, ValueError):
@@ -645,6 +713,24 @@ class OS2Calculator:
             if left is None or right is None:
                 return None
             return (left, '-', right, result)
+        if ' * ' in left_side:
+            parts = left_side.split(' * ', 1)
+            if len(parts) != 2:
+                return None
+            left = self._parse_display_number(parts[0].strip())
+            right = self._parse_display_number(parts[1].strip())
+            if left is None or right is None:
+                return None
+            return (left, '*', right, result)
+        if ' / ' in left_side:
+            parts = left_side.split(' / ', 1)
+            if len(parts) != 2:
+                return None
+            left = self._parse_display_number(parts[0].strip())
+            right = self._parse_display_number(parts[1].strip())
+            if left is None or right is None:
+                return None
+            return (left, '/', right, result)
         return None
 
     def _recalculate_tape(self):
@@ -681,8 +767,15 @@ class OS2Calculator:
                 effective_left = running_sum if new_lines else left
                 if op == '+':
                     running_sum = effective_left + right
-                else:
+                elif op == '-':
                     running_sum = effective_left - right
+                elif op == '*':
+                    running_sum = effective_left * right
+                elif op == '/':
+                    if right == 0:
+                        messagebox.showerror("Ошибка", "Деление на ноль.")
+                        return
+                    running_sum = effective_left / right
                 new_lines.append(
                     f"{self._format_number(effective_left)} {op} {self._format_number(right)} = {self._format_number(running_sum)}"
                 )
