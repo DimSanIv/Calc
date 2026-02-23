@@ -27,7 +27,7 @@ class OS2Calculator:
     
     Особенности:
     - Крупные кнопки, особенно для операций + и -
-    - Лента вычислений (только просмотр, без редактирования)
+    - Лента вычислений (редактируемая, с пересчётом цепочки)
     - Отдельное окно для отображения текущей суммы
     """
     
@@ -65,9 +65,14 @@ class OS2Calculator:
         self.input_mode = "number"
         # Последняя операция
         self.last_operation = None
+        # Базовое состояние ленты для подсветки изменённых строк (при редактировании)
+        self._tape_baseline = []
         
+        # Путь к лог-файлу ленты (в папке программы)
+        self.log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'calc.log')
         self._create_widgets()
         self._create_history_window()
+        self._load_log()
         self._bind_keyboard()
         
     def _create_widgets(self):
@@ -161,6 +166,17 @@ class OS2Calculator:
             bd=2
         )
         clear_ribbon_btn.pack(side=tk.LEFT, padx=(0, 4), fill=tk.BOTH, expand=True)
+        
+        recalc_ribbon_btn = tk.Button(
+            ribbon_buttons_frame,
+            text="Пересчитать",
+            command=self._recalculate_tape,
+            bg='#C0C0C0',
+            font=('MS Sans Serif', 9),
+            relief=tk.RAISED,
+            bd=2
+        )
+        recalc_ribbon_btn.pack(side=tk.LEFT, padx=2, fill=tk.BOTH, expand=True)
         
         hide_ribbon_btn = tk.Button(
             ribbon_buttons_frame,
@@ -500,8 +516,10 @@ class OS2Calculator:
             relief=tk.SUNKEN,
             bd=2,
             yscrollcommand=history_scrollbar.set,
-            state=tk.DISABLED
+            state=tk.NORMAL
         )
+        self.history_text.tag_configure('modified', foreground='red')
+        self.history_text.bind('<KeyRelease>', self._on_tape_key_release)
         self.history_text.pack(padx=(5, 0), pady=(0, 5), fill=tk.BOTH, expand=True)
         history_scrollbar.config(command=self.history_text.yview)
         
@@ -517,27 +535,175 @@ class OS2Calculator:
             self.history_window.lift()  # Поднять на передний план
     
     def _add_to_history(self, text):
-        """Добавление записи в историю."""
+        """Добавление записи в историю и в файл calc.log."""
         self.history.append(text)
         self._history_append(text + "\n")
+        try:
+            with open(self.log_path, 'a', encoding='utf-8') as f:
+                f.write(text + "\n")
+        except OSError:
+            pass
     
     def _clear_history(self):
-        """Очистка только истории вычислений (ленты)."""
+        """Очистка истории вычислений (ленты) и содержимого calc.log."""
         self.history.clear()
         self._history_clear()
+        try:
+            with open(self.log_path, 'w', encoding='utf-8') as f:
+                pass
+        except OSError:
+            pass
 
     def _history_append(self, text: str):
-        """Добавляет текст в ленту (read-only Text)."""
-        self.history_text.config(state=tk.NORMAL)
+        """Добавляет текст в ленту (редактируемое поле)."""
         self.history_text.insert(tk.END, text)
         self.history_text.see(tk.END)
-        self.history_text.config(state=tk.DISABLED)
+        line = text.rstrip('\n')
+        if line:
+            self._tape_baseline.append(line)
 
     def _history_clear(self):
-        """Очищает ленту (read-only Text)."""
+        """Очищает ленту и базовое состояние для подсветки."""
+        self.history_text.delete('1.0', tk.END)
+        self._tape_baseline.clear()
+
+    def _load_log(self):
+        """Загрузка ленты из calc.log при запуске."""
+        if not os.path.exists(self.log_path):
+            return
+        try:
+            with open(self.log_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.rstrip('\n\r')
+                    if line:
+                        self.history.append(line)
+                        self._history_append(line + "\n")
+            self._tape_baseline = self.history.copy()
+        except OSError:
+            pass
+
+    def _on_tape_key_release(self, event=None):
+        """Подсветка изменённых строк ленты красным."""
+        self._update_tape_modified_marks()
+
+    def _update_tape_modified_marks(self):
+        """Помечает красным строки, отличающиеся от базового состояния."""
+        self.history_text.tag_remove('modified', '1.0', tk.END)
+        current = self.history_text.get('1.0', tk.END)
+        lines = [s.rstrip('\r\n') for s in current.split('\n')]
+        if lines and lines[-1] == '' and current.endswith('\n'):
+            lines.pop()
+        for i, line in enumerate(lines):
+            if i >= len(self._tape_baseline) or self._tape_baseline[i] != line:
+                start = f'{i + 1}.0'
+                end = f'{i + 1}.end'
+                self.history_text.tag_add('modified', start, end)
+
+    def _parse_display_number(self, s):
+        """Преобразует число с ленты (формат 1'234,56) в Decimal. Возвращает None при ошибке."""
+        if not s or not s.strip():
+            return None
+        s = s.strip().replace("'", "").replace(",", ".")
+        try:
+            return Decimal(s)
+        except (InvalidOperation, ValueError):
+            return None
+
+    def _parse_tape_line(self, line):
+        """
+        Парсит строку ленты. Возвращает (left, op, right, result) или (None, None, None, result) для "= C".
+        При ошибке возвращает None.
+        """
+        line = line.strip()
+        if not line:
+            return None
+        if ' = ' not in line:
+            return None
+        left_side, _, result_str = line.partition(' = ')
+        left_side = left_side.strip()
+        result_str = result_str.strip()
+        result = self._parse_display_number(result_str)
+        if result is None:
+            return None
+        if left_side == '=' or not left_side:
+            return (None, None, None, result)
+        if ' + ' in left_side:
+            parts = left_side.split(' + ', 1)
+            if len(parts) != 2:
+                return None
+            left = self._parse_display_number(parts[0].strip())
+            right = self._parse_display_number(parts[1].strip())
+            if left is None or right is None:
+                return None
+            return (left, '+', right, result)
+        if ' - ' in left_side:
+            parts = left_side.split(' - ', 1)
+            if len(parts) != 2:
+                return None
+            left = self._parse_display_number(parts[0].strip())
+            right = self._parse_display_number(parts[1].strip())
+            if left is None or right is None:
+                return None
+            return (left, '-', right, result)
+        return None
+
+    def _recalculate_tape(self):
+        """
+        Пересчёт цепочки вычислений по текущему содержимому ленты.
+        Цепочка берётся из виджета (отображает данные из лог-файла), пересчитывается,
+        лента и calc.log обновляются.
+        """
+        content = self.history_text.get('1.0', tk.END)
+        lines = [s.strip() for s in content.split('\n') if s.strip()]
+        if not lines:
+            self._tape_baseline.clear()
+            self.history.clear()
+            try:
+                with open(self.log_path, 'w', encoding='utf-8') as f:
+                    pass
+            except OSError:
+                pass
+            self._update_sum_display()
+            return
+        running_sum = Decimal('0')
+        new_lines = []
+        for line in lines:
+            parsed = self._parse_tape_line(line)
+            if parsed is None:
+                messagebox.showerror("Ошибка", f"Не удалось разобрать строку: {line}")
+                return
+            left, op, right, _ = parsed
+            if left is None:
+                running_sum = _
+                new_lines.append("= " + self._format_number(running_sum))
+            else:
+                # Левый операнд = результат предыдущей строки (цепочка), кроме самой первой строки
+                effective_left = running_sum if new_lines else left
+                if op == '+':
+                    running_sum = effective_left + right
+                else:
+                    running_sum = effective_left - right
+                new_lines.append(
+                    f"{self._format_number(effective_left)} {op} {self._format_number(right)} = {self._format_number(running_sum)}"
+                )
+        new_content = '\n'.join(new_lines) + '\n'
         self.history_text.config(state=tk.NORMAL)
         self.history_text.delete('1.0', tk.END)
-        self.history_text.config(state=tk.DISABLED)
+        self.history_text.insert('1.0', new_content)
+        self.history_text.see(tk.END)
+        self.history_text.update_idletasks()
+        self.history = new_lines.copy()
+        self._tape_baseline = new_lines.copy()
+        self.current_sum = running_sum
+        self._update_sum_display()
+        try:
+            with open(self.log_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+                f.flush()
+                if hasattr(os, 'fsync'):
+                    os.fsync(f.fileno())
+        except (OSError, AttributeError):
+            pass
 
 def main():
     """Главная функция для запуска приложения."""
